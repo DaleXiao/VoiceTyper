@@ -6,12 +6,14 @@ final class RecordingOverlayController {
         static let width: CGFloat = 208
         static let height: CGFloat = 52
     }
+    fileprivate enum Refresh {
+        static let interval: TimeInterval = 1.0 / 12.0
+    }
 
     private let model = RecordingOverlayModel()
     private var panel: NSPanel?
     private var timer: Timer?
     private var levelProvider: (() -> CGFloat)?
-    private var phaseStartedAt = Date()
 
     func prepare() {
         guard panel == nil else {
@@ -28,9 +30,7 @@ final class RecordingOverlayController {
         levelProvider: @escaping () -> CGFloat
     ) {
         self.levelProvider = levelProvider
-        phaseStartedAt = Date()
         model.phase = .recording
-        model.elapsed = 0
         showPanel()
         startTimer()
     }
@@ -42,7 +42,6 @@ final class RecordingOverlayController {
         model.phase = .message
         model.message = message
         model.level = 0
-        model.elapsed = 0
         showPanel()
 
         Task { @MainActor [weak self] in
@@ -59,7 +58,6 @@ final class RecordingOverlayController {
         levelProvider = nil
         model.message = ""
         model.level = 0
-        model.elapsed = 0
         panel?.orderOut(nil)
     }
 
@@ -72,16 +70,17 @@ final class RecordingOverlayController {
 
     private func startTimer() {
         timer?.invalidate()
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
-                guard let self else {
-                    return
-                }
+        let timer = Timer(timeInterval: Refresh.interval, repeats: true) { [weak self] _ in
+            guard let self else {
+                return
+            }
 
-                self.model.elapsed = Date().timeIntervalSince(self.phaseStartedAt)
-                self.model.level = self.levelProvider?() ?? 0
+            let level = self.levelProvider?() ?? 0
+            if abs(self.model.level - level) > 0.01 {
+                self.model.level = level
             }
         }
+        timer.tolerance = Refresh.interval * 0.25
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
@@ -124,7 +123,6 @@ final class RecordingOverlayModel: ObservableObject {
     @Published var phase: RecordingOverlayPhase = .recording
     @Published var message: String = ""
     @Published var level: CGFloat = 0
-    @Published var elapsed: TimeInterval = 0
 }
 
 enum RecordingOverlayPhase {
@@ -137,7 +135,7 @@ private struct RecordingOverlayView: View {
     @ObservedObject var model: RecordingOverlayModel
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.periodic(from: Date(), by: RecordingOverlayController.Refresh.interval)) { timeline in
             content(date: timeline.date)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(.horizontal, 18)

@@ -78,10 +78,23 @@ struct RecordingShortcut: Equatable {
     }
 
     func save(to defaults: UserDefaults) {
-        defaults.set(Int(keyCode), forKey: Keys.keyCode)
-        defaults.set(Int(carbonModifiers), forKey: Keys.modifiers)
-        defaults.set(displayName, forKey: Keys.displayName)
-        defaults.set(isFunctionKey, forKey: Keys.isFunctionKey)
+        let keyCode = Int(keyCode)
+        if (defaults.object(forKey: Keys.keyCode) as? Int) != keyCode {
+            defaults.set(keyCode, forKey: Keys.keyCode)
+        }
+
+        let modifiers = Int(carbonModifiers)
+        if (defaults.object(forKey: Keys.modifiers) as? Int) != modifiers {
+            defaults.set(modifiers, forKey: Keys.modifiers)
+        }
+
+        if defaults.string(forKey: Keys.displayName) != displayName {
+            defaults.set(displayName, forKey: Keys.displayName)
+        }
+
+        if (defaults.object(forKey: Keys.isFunctionKey) as? Bool) != isFunctionKey {
+            defaults.set(isFunctionKey, forKey: Keys.isFunctionKey)
+        }
     }
 
     private static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {

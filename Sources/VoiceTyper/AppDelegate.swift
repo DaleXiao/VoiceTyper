@@ -734,9 +734,14 @@ private final class RealtimeAudioRouter: @unchecked Sendable {
 
             self.pendingChunks.append(pcmData)
             self.pendingByteCount += pcmData.count
+            var dropCount = 0
             while self.pendingByteCount > self.maxPendingByteCount,
-                  !self.pendingChunks.isEmpty {
-                self.pendingByteCount -= self.pendingChunks.removeFirst().count
+                  dropCount < self.pendingChunks.count {
+                self.pendingByteCount -= self.pendingChunks[dropCount].count
+                dropCount += 1
+            }
+            if dropCount > 0 {
+                self.pendingChunks.removeFirst(dropCount)
             }
         }
     }

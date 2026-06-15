@@ -127,6 +127,7 @@ final class UserSettings: ObservableObject {
         return formatter
     }()
     private let defaults = UserDefaults.standard
+    private var lastSavedInputHistory: [InputHistoryEntry] = []
 
     init() {
         asrEndpointText = defaults.string(forKey: Keys.asrEndpointText)
@@ -172,6 +173,7 @@ final class UserSettings: ObservableObject {
            asrModel.lowercased().contains("asr") {
             requestMode = .dashScopeQwenASR
         }
+        lastSavedInputHistory = inputHistory
     }
 
     var isConfigured: Bool {
@@ -463,35 +465,69 @@ final class UserSettings: ObservableObject {
     }
 
     private func save() {
-        defaults.set(asrEndpointText, forKey: Keys.asrEndpointText)
-        defaults.set(apiKey, forKey: Keys.apiKey)
-        defaults.set(asrModel, forKey: Keys.asrModel)
-        defaults.set(asrModelOptions, forKey: Keys.asrModelOptions)
-        defaults.set(rewriteEnabled, forKey: Keys.rewriteEnabled)
-        defaults.set(rewriteEndpointText, forKey: Keys.rewriteEndpointText)
-        defaults.set(rewriteModel, forKey: Keys.rewriteModel)
-        defaults.set(rewriteModelOptions, forKey: Keys.rewriteModelOptions)
-        defaults.set(requestMode.rawValue, forKey: Keys.requestMode)
-        defaults.set(authHeaderName, forKey: Keys.authHeaderName)
-        defaults.set(authHeaderPrefix, forKey: Keys.authHeaderPrefix)
-        defaults.set(languageCode, forKey: Keys.languageCode)
-        defaults.set(stylePrompt, forKey: Keys.stylePrompt)
-        defaults.set(vocabulary, forKey: Keys.vocabulary)
-        defaults.set(asrResponseKeyPath, forKey: Keys.asrResponseKeyPath)
-        defaults.set(rewriteResponseKeyPath, forKey: Keys.rewriteResponseKeyPath)
-        defaults.set(rewriteSkipMaxCharacters, forKey: Keys.rewriteSkipMaxCharacters)
-        defaults.set(fastOutputEnabled, forKey: Keys.fastOutputEnabled)
-        defaults.set(autoGenerateVocabulary, forKey: Keys.autoGenerateVocabulary)
-        defaults.set(autoPaste, forKey: Keys.autoPaste)
-        defaults.set(preserveClipboard, forKey: Keys.preserveClipboard)
-        defaults.set(showDockIcon, forKey: Keys.showDockIcon)
+        saveString(asrEndpointText, forKey: Keys.asrEndpointText)
+        saveString(apiKey, forKey: Keys.apiKey)
+        saveString(asrModel, forKey: Keys.asrModel)
+        saveStringArray(asrModelOptions, forKey: Keys.asrModelOptions)
+        saveBool(rewriteEnabled, forKey: Keys.rewriteEnabled)
+        saveString(rewriteEndpointText, forKey: Keys.rewriteEndpointText)
+        saveString(rewriteModel, forKey: Keys.rewriteModel)
+        saveStringArray(rewriteModelOptions, forKey: Keys.rewriteModelOptions)
+        saveString(requestMode.rawValue, forKey: Keys.requestMode)
+        saveString(authHeaderName, forKey: Keys.authHeaderName)
+        saveString(authHeaderPrefix, forKey: Keys.authHeaderPrefix)
+        saveString(languageCode, forKey: Keys.languageCode)
+        saveString(stylePrompt, forKey: Keys.stylePrompt)
+        saveString(vocabulary, forKey: Keys.vocabulary)
+        saveString(asrResponseKeyPath, forKey: Keys.asrResponseKeyPath)
+        saveString(rewriteResponseKeyPath, forKey: Keys.rewriteResponseKeyPath)
+        saveInt(rewriteSkipMaxCharacters, forKey: Keys.rewriteSkipMaxCharacters)
+        saveBool(fastOutputEnabled, forKey: Keys.fastOutputEnabled)
+        saveBool(autoGenerateVocabulary, forKey: Keys.autoGenerateVocabulary)
+        saveBool(autoPaste, forKey: Keys.autoPaste)
+        saveBool(preserveClipboard, forKey: Keys.preserveClipboard)
+        saveBool(showDockIcon, forKey: Keys.showDockIcon)
         recordingShortcut.save(to: defaults)
-        defaults.set(holdToRecordEnabled, forKey: Keys.holdToRecordEnabled)
-        defaults.set(inputHistoryEnabled, forKey: Keys.inputHistoryEnabled)
-        defaults.set(inputHistoryRetentionDays, forKey: Keys.inputHistoryRetentionDays)
-        if let historyData = try? JSONEncoder().encode(inputHistory) {
+        saveBool(holdToRecordEnabled, forKey: Keys.holdToRecordEnabled)
+        saveBool(inputHistoryEnabled, forKey: Keys.inputHistoryEnabled)
+        saveInt(inputHistoryRetentionDays, forKey: Keys.inputHistoryRetentionDays)
+        saveInputHistoryIfNeeded()
+    }
+
+    private func saveString(_ value: String, forKey key: String) {
+        if defaults.string(forKey: key) != value {
+            defaults.set(value, forKey: key)
+        }
+    }
+
+    private func saveStringArray(_ value: [String], forKey key: String) {
+        if defaults.stringArray(forKey: key) != value {
+            defaults.set(value, forKey: key)
+        }
+    }
+
+    private func saveBool(_ value: Bool, forKey key: String) {
+        if (defaults.object(forKey: key) as? Bool) != value {
+            defaults.set(value, forKey: key)
+        }
+    }
+
+    private func saveInt(_ value: Int, forKey key: String) {
+        if (defaults.object(forKey: key) as? Int) != value {
+            defaults.set(value, forKey: key)
+        }
+    }
+
+    private func saveInputHistoryIfNeeded() {
+        guard inputHistory != lastSavedInputHistory else {
+            return
+        }
+
+        if let historyData = try? JSONEncoder().encode(inputHistory),
+           defaults.data(forKey: Keys.inputHistory) != historyData {
             defaults.set(historyData, forKey: Keys.inputHistory)
         }
+        lastSavedInputHistory = inputHistory
     }
 
     private static func loadInputHistory(from defaults: UserDefaults) -> [InputHistoryEntry] {

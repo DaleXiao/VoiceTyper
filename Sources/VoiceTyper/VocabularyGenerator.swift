@@ -1,16 +1,46 @@
 import Foundation
 
 final class VocabularyGenerator {
+    private let cache = VocabularyTermCache()
+
     func generateTerms(from text: String, settings: SettingsSnapshot) async -> [String] {
-        if settings.rewriteEnabled,
-           let endpoint = settings.rewriteEndpoint,
-           !settings.rewriteModel.isEmpty,
-           let modelTerms = try? await generateWithModel(text: text, endpoint: endpoint, settings: settings),
-           !modelTerms.isEmpty {
-            return Self.merge(modelTerms + Self.heuristicTerms(from: text))
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            return []
         }
 
-        return Self.heuristicTerms(from: text)
+        let cacheKey = VocabularyTermCache.Key(
+            text: trimmedText,
+            endpoint: settings.rewriteEndpoint?.absoluteString ?? "",
+            model: settings.rewriteModel
+        )
+        if let cachedTerms = await cache.terms(for: cacheKey) {
+            return cachedTerms
+        }
+
+        let heuristicTerms = Self.heuristicTerms(from: trimmedText)
+        let terms: [String]
+        let shouldCache: Bool
+        if settings.rewriteEnabled,
+           let endpoint = settings.rewriteEndpoint,
+           !settings.rewriteModel.isEmpty {
+            do {
+                let modelTerms = try await generateWithModel(text: trimmedText, endpoint: endpoint, settings: settings)
+                terms = modelTerms.isEmpty ? heuristicTerms : Self.merge(modelTerms + heuristicTerms)
+                shouldCache = true
+            } catch {
+                terms = heuristicTerms
+                shouldCache = false
+            }
+        } else {
+            terms = heuristicTerms
+            shouldCache = true
+        }
+
+        if shouldCache {
+            await cache.store(terms, for: cacheKey)
+        }
+        return terms
     }
 
     private func generateWithModel(text: String, endpoint: URL, settings: SettingsSnapshot) async throws -> [String] {
@@ -109,6 +139,39 @@ final class VocabularyGenerator {
 
         components.path = "/" + (path.isEmpty ? "chat/completions" : path + "/chat/completions")
         return components.url ?? endpoint
+    }
+}
+
+private actor VocabularyTermCache {
+    struct Key: Hashable {
+        let text: String
+        let endpoint: String
+        let model: String
+    }
+
+    private var values: [Key: [String]] = [:]
+    private var keys: [Key] = []
+    private let maxCount = 64
+
+    func terms(for key: Key) -> [String]? {
+        values[key]
+    }
+
+    func store(_ terms: [String], for key: Key) {
+        guard values[key] == nil else {
+            values[key] = terms
+            return
+        }
+
+        values[key] = terms
+        keys.append(key)
+        if keys.count > maxCount {
+            let removed = Array(keys.prefix(keys.count - maxCount))
+            keys.removeFirst(keys.count - maxCount)
+            for key in removed {
+                values.removeValue(forKey: key)
+            }
+        }
     }
 }
 

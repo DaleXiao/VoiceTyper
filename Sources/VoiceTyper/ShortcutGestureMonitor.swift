@@ -38,8 +38,9 @@ final class ShortcutGestureMonitor {
         self.onHoldEnded = onHoldEnded
         self.onCancel = onCancel
 
-        _ = installEventTap()
-        installNSEventMonitors()
+        if !installEventTap() {
+            installNSEventMonitors()
+        }
     }
 
     func stop() {

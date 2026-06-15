@@ -1194,12 +1194,15 @@ private final class RealtimeWebSocketSender: @unchecked Sendable {
     private let queue = DispatchQueue(label: "VoiceTyper.TranscriptionClient.realtimeSender")
     private var firstError: Error?
     private var isFinishing = false
+    private var pendingAudio = Data()
     private var audioByteCount = 0
     private let minimumAudioByteCount = 3_200
+    private let targetAudioByteCount = 3_200
 
     init(webSocketTask: URLSessionWebSocketTask, realtimeProtocol: DashScopeRealtimeProtocol) {
         self.webSocketTask = webSocketTask
         self.realtimeProtocol = realtimeProtocol
+        pendingAudio.reserveCapacity(targetAudioByteCount * 2)
     }
 
     func enqueueAudio(_ pcmData: Data) {
@@ -1212,20 +1215,8 @@ private final class RealtimeWebSocketSender: @unchecked Sendable {
                 return
             }
 
-            switch self.realtimeProtocol {
-            case .qwenSession:
-                self.sendSync([
-                    "event_id": TranscriptionClient.eventID(),
-                    "type": "input_audio_buffer.append",
-                    "audio": pcmData.base64EncodedString()
-                ])
-            case .inferenceTask:
-                self.sendDataSync(pcmData)
-            }
-
-            if self.firstError == nil {
-                self.audioByteCount += pcmData.count
-            }
+            self.pendingAudio.append(pcmData)
+            self.flushPendingAudioIfNeeded(force: false)
         }
     }
 
@@ -1248,6 +1239,7 @@ private final class RealtimeWebSocketSender: @unchecked Sendable {
                 }
 
                 self.isFinishing = true
+                self.flushPendingAudioIfNeeded(force: true)
                 if let firstError = self.firstError {
                     continuation.resume(throwing: firstError)
                     return
@@ -1277,6 +1269,31 @@ private final class RealtimeWebSocketSender: @unchecked Sendable {
     func cancel() {
         queue.async { [weak self] in
             self?.isFinishing = true
+        }
+    }
+
+    private func flushPendingAudioIfNeeded(force: Bool) {
+        guard firstError == nil,
+              !pendingAudio.isEmpty,
+              force || pendingAudio.count >= targetAudioByteCount else {
+            return
+        }
+
+        let audio = pendingAudio
+        pendingAudio.removeAll(keepingCapacity: true)
+        switch realtimeProtocol {
+        case .qwenSession:
+            sendSync([
+                "event_id": TranscriptionClient.eventID(),
+                "type": "input_audio_buffer.append",
+                "audio": audio.base64EncodedString()
+            ])
+        case .inferenceTask:
+            sendDataSync(audio)
+        }
+
+        if firstError == nil {
+            audioByteCount += audio.count
         }
     }
 

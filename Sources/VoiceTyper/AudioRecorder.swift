@@ -3,12 +3,19 @@ import CoreGraphics
 import Foundation
 
 final class AudioRecorder {
+    private enum Streaming {
+        static let tapBufferSize: AVAudioFrameCount = 2_048
+        static let levelUpdateInterval: TimeInterval = 1.0 / 12.0
+    }
+
     private var recorder: AVAudioRecorder?
     private var currentURL: URL?
     private var audioEngine: AVAudioEngine?
     private var audioConverter: AVAudioConverter?
+    private var streamingOutputBuffer: AVAudioPCMBuffer?
     private var onPCMData: ((Data) -> Void)?
     private var streamingLevel: CGFloat = 0
+    private var lastStreamingLevelUpdate: TimeInterval = 0
     private let streamQueue = DispatchQueue(label: "VoiceTyper.AudioRecorder.stream")
 
     var isRecording: Bool {
@@ -66,8 +73,9 @@ final class AudioRecorder {
         self.audioConverter = converter
         self.onPCMData = onPCMData
         streamingLevel = 0
+        lastStreamingLevelUpdate = 0
 
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: Streaming.tapBufferSize, format: inputFormat) { [weak self] buffer, _ in
             self?.convertAndSend(buffer, inputFormat: inputFormat, outputFormat: outputFormat)
         }
 
@@ -78,6 +86,7 @@ final class AudioRecorder {
             inputNode.removeTap(onBus: 0)
             audioEngine = nil
             audioConverter = nil
+            streamingOutputBuffer = nil
             self.onPCMData = nil
             throw error
         }
@@ -100,8 +109,10 @@ final class AudioRecorder {
         streamQueue.sync {}
         audioEngine = nil
         audioConverter = nil
+        streamingOutputBuffer = nil
         onPCMData = nil
         streamingLevel = 0
+        lastStreamingLevelUpdate = 0
     }
 
     func currentLevel() -> CGFloat {
@@ -144,8 +155,17 @@ final class AudioRecorder {
 
             let ratio = outputFormat.sampleRate / inputFormat.sampleRate
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
-            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
-                return
+            let outputBuffer: AVAudioPCMBuffer
+            if let reusableBuffer = self.streamingOutputBuffer,
+               reusableBuffer.frameCapacity >= capacity {
+                reusableBuffer.frameLength = 0
+                outputBuffer = reusableBuffer
+            } else {
+                guard let newBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+                    return
+                }
+                self.streamingOutputBuffer = newBuffer
+                outputBuffer = newBuffer
             }
 
             var didProvideInput = false
@@ -171,9 +191,13 @@ final class AudioRecorder {
                 return
             }
 
-            let level = Self.level(fromPCMData: data)
-            DispatchQueue.main.async { [weak self] in
-                self?.streamingLevel = level
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - self.lastStreamingLevelUpdate >= Streaming.levelUpdateInterval {
+                self.lastStreamingLevelUpdate = now
+                let level = Self.level(fromPCMData: data)
+                DispatchQueue.main.async { [weak self] in
+                    self?.streamingLevel = level
+                }
             }
             self.onPCMData?(data)
         }
