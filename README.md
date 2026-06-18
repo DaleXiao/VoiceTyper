@@ -1,7 +1,10 @@
 # 说入法
 
 说入法是一个自用 macOS 语音输入工具：默认轻按 `fn` 开始录音，再按一次停止并输出 ASR 原文；长按 `fn` 开始录音，松开后会交给润色模型整理。你也可以在设置里录制自己的快捷键，最后的文字会自动粘贴到当前光标。
-<img width="740" height="732" alt="image" src="https://github.com/user-attachments/assets/f2528579-62bc-415f-8f45-107e27ce5063" />
+<img width="1153" height="882" alt="image" src="https://github.com/user-attachments/assets/4a3e6a9b-733f-49cf-8ed0-a5c1b1d081c5" />
+
+<img width="958" height="884" alt="image" src="https://github.com/user-attachments/assets/c090d847-e65a-490e-8b37-8e7bfe611457" />
+
 
 ## API 约定
 
