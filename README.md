@@ -80,3 +80,7 @@ build/说入法.app
 ```
 
 第一次运行后，在设置里填 API endpoint、API key，并从下拉框分别选择 ASR model 和润色 model。默认润色复用同一个 API endpoint；只有 ASR 和润色走不同服务时，才需要在高级设置里填写润色 endpoint 覆盖。快捷键录制、流式 ASR、Dock 图标、录音浮窗、输入历史隐私控制、自动用户词库学习都在设置里可用。
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
