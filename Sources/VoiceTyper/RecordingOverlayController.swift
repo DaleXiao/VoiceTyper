@@ -31,6 +31,7 @@ final class RecordingOverlayController {
     ) {
         self.levelProvider = levelProvider
         model.phase = .recording
+        model.animationTime = ProcessInfo.processInfo.systemUptime
         showPanel()
         startTimer()
     }
@@ -42,6 +43,7 @@ final class RecordingOverlayController {
         model.phase = .message
         model.message = message
         model.level = 0
+        model.animationTime = 0
         showPanel()
 
         Task { @MainActor [weak self] in
@@ -58,6 +60,7 @@ final class RecordingOverlayController {
         levelProvider = nil
         model.message = ""
         model.level = 0
+        model.animationTime = 0
         panel?.orderOut(nil)
     }
 
@@ -76,6 +79,7 @@ final class RecordingOverlayController {
             }
 
             let level = self.levelProvider?() ?? 0
+            self.model.animationTime = ProcessInfo.processInfo.systemUptime
             if abs(self.model.level - level) > 0.01 {
                 self.model.level = level
             }
@@ -123,6 +127,7 @@ final class RecordingOverlayModel: ObservableObject {
     @Published var phase: RecordingOverlayPhase = .recording
     @Published var message: String = ""
     @Published var level: CGFloat = 0
+    @Published var animationTime: TimeInterval = 0
 }
 
 enum RecordingOverlayPhase {
@@ -135,8 +140,7 @@ private struct RecordingOverlayView: View {
     @ObservedObject var model: RecordingOverlayModel
 
     var body: some View {
-        TimelineView(.periodic(from: Date(), by: RecordingOverlayController.Refresh.interval)) { timeline in
-            content(date: timeline.date)
+        content(time: model.animationTime)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
@@ -146,19 +150,18 @@ private struct RecordingOverlayView: View {
                 Capsule()
                     .strokeBorder(Color.white.opacity(0.20), lineWidth: 1)
             )
-        }
         .frame(width: RecordingOverlayController.Layout.width, height: RecordingOverlayController.Layout.height)
     }
 
     @ViewBuilder
-    private func content(date: Date) -> some View {
+    private func content(time: TimeInterval) -> some View {
         switch model.phase {
         case .recording, .processing:
             HStack(spacing: 12) {
                 recordingDot
                     .frame(width: 22, height: 22)
 
-                WaveformBars(level: model.level, date: date)
+                WaveformBars(level: model.level, time: time)
                     .frame(width: 76, height: 26)
             }
         case .message:
@@ -232,7 +235,7 @@ private final class CapsuleVisualEffectView: NSVisualEffectView {
 
 private struct WaveformBars: View {
     let level: CGFloat
-    let date: Date
+    let time: TimeInterval
 
     var body: some View {
         HStack(alignment: .center, spacing: 4) {
@@ -246,7 +249,6 @@ private struct WaveformBars: View {
     }
 
     private func height(for index: Int) -> CGFloat {
-        let time = date.timeIntervalSinceReferenceDate
         let phase = sin(time * 8.0 + Double(index) * 0.72)
         let ripple = CGFloat((phase + 1) / 2)
         let envelope = 0.35 + level * 0.65

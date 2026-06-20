@@ -1,6 +1,10 @@
 import Foundation
 
 final class VocabularyGenerator {
+    private static let heuristicRegex = try? NSRegularExpression(
+        pattern: #"([A-Za-z][A-Za-z0-9._+-]{2,}|[A-Za-z]+[一-龥]+|[一-龥]+[A-Za-z0-9]+|[A-Z]{2,})"#
+    )
+
     private let cache = VocabularyTermCache()
 
     func generateTerms(from text: String, settings: SettingsSnapshot) async -> [String] {
@@ -19,6 +23,11 @@ final class VocabularyGenerator {
         }
 
         let heuristicTerms = Self.heuristicTerms(from: trimmedText)
+        guard !heuristicTerms.isEmpty else {
+            await cache.store([], for: cacheKey)
+            return []
+        }
+
         let terms: [String]
         let shouldCache: Bool
         if settings.rewriteEnabled,
@@ -65,7 +74,7 @@ final class VocabularyGenerator {
         let body = try JSONEncoder().encode(payload)
         request.httpBody = body
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AppNetworkSession.shared.data(for: request)
         if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
             throw VocabularyError.requestFailed(httpResponse.statusCode)
         }
@@ -94,8 +103,7 @@ final class VocabularyGenerator {
     }
 
     private static func heuristicTerms(from text: String) -> [String] {
-        let pattern = #"([A-Za-z][A-Za-z0-9._+-]{2,}|[A-Za-z]+[一-龥]+|[一-龥]+[A-Za-z0-9]+|[A-Z]{2,})"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        guard let regex = heuristicRegex else {
             return []
         }
 

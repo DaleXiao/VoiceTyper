@@ -3,116 +3,119 @@ import Foundation
 
 final class UserSettings: ObservableObject {
     @Published var asrEndpointText: String {
-        didSet { save() }
+        didSet { saveString(asrEndpointText, forKey: Keys.asrEndpointText) }
     }
 
     @Published var apiKey: String {
-        didSet { save() }
+        didSet { saveString(apiKey, forKey: Keys.apiKey) }
     }
 
     @Published var asrModel: String {
-        didSet { save() }
+        didSet { saveString(asrModel, forKey: Keys.asrModel) }
     }
 
     @Published var asrModelOptions: [String] {
-        didSet { save() }
+        didSet { saveStringArray(asrModelOptions, forKey: Keys.asrModelOptions) }
     }
 
     @Published var rewriteEnabled: Bool {
-        didSet { save() }
+        didSet { saveBool(rewriteEnabled, forKey: Keys.rewriteEnabled) }
     }
 
     @Published var rewriteEndpointText: String {
-        didSet { save() }
+        didSet { saveString(rewriteEndpointText, forKey: Keys.rewriteEndpointText) }
     }
 
     @Published var rewriteModel: String {
-        didSet { save() }
+        didSet { saveString(rewriteModel, forKey: Keys.rewriteModel) }
     }
 
     @Published var rewriteModelOptions: [String] {
-        didSet { save() }
+        didSet { saveStringArray(rewriteModelOptions, forKey: Keys.rewriteModelOptions) }
     }
 
     @Published var requestMode: RequestMode {
-        didSet { save() }
+        didSet { saveString(requestMode.rawValue, forKey: Keys.requestMode) }
     }
 
     @Published var authHeaderName: String {
-        didSet { save() }
+        didSet { saveString(authHeaderName, forKey: Keys.authHeaderName) }
     }
 
     @Published var authHeaderPrefix: String {
-        didSet { save() }
+        didSet { saveString(authHeaderPrefix, forKey: Keys.authHeaderPrefix) }
     }
 
     @Published var languageCode: String {
-        didSet { save() }
+        didSet { saveString(languageCode, forKey: Keys.languageCode) }
     }
 
     @Published var stylePrompt: String {
-        didSet { save() }
+        didSet { saveString(stylePrompt, forKey: Keys.stylePrompt) }
     }
 
     @Published var vocabulary: String {
-        didSet { save() }
+        didSet { saveString(vocabulary, forKey: Keys.vocabulary) }
     }
 
     @Published var asrResponseKeyPath: String {
-        didSet { save() }
+        didSet { saveString(asrResponseKeyPath, forKey: Keys.asrResponseKeyPath) }
     }
 
     @Published var rewriteResponseKeyPath: String {
-        didSet { save() }
+        didSet { saveString(rewriteResponseKeyPath, forKey: Keys.rewriteResponseKeyPath) }
     }
 
     @Published var rewriteSkipMaxCharacters: Int {
-        didSet { save() }
+        didSet { saveInt(rewriteSkipMaxCharacters, forKey: Keys.rewriteSkipMaxCharacters) }
     }
 
     @Published var fastOutputEnabled: Bool {
-        didSet { save() }
+        didSet { saveBool(fastOutputEnabled, forKey: Keys.fastOutputEnabled) }
     }
 
     @Published var autoGenerateVocabulary: Bool {
-        didSet { save() }
+        didSet { saveBool(autoGenerateVocabulary, forKey: Keys.autoGenerateVocabulary) }
     }
 
     @Published var autoPaste: Bool {
-        didSet { save() }
+        didSet { saveBool(autoPaste, forKey: Keys.autoPaste) }
     }
 
     @Published var preserveClipboard: Bool {
-        didSet { save() }
+        didSet { saveBool(preserveClipboard, forKey: Keys.preserveClipboard) }
     }
 
     @Published var showDockIcon: Bool {
-        didSet { save() }
+        didSet { saveBool(showDockIcon, forKey: Keys.showDockIcon) }
     }
 
     @Published var recordingShortcut: RecordingShortcut {
-        didSet { save() }
+        didSet { recordingShortcut.save(to: defaults) }
     }
 
     @Published var holdToRecordEnabled: Bool {
-        didSet { save() }
+        didSet { saveBool(holdToRecordEnabled, forKey: Keys.holdToRecordEnabled) }
     }
 
     @Published var inputHistoryEnabled: Bool {
-        didSet { save() }
+        didSet { saveBool(inputHistoryEnabled, forKey: Keys.inputHistoryEnabled) }
     }
 
     @Published var inputHistoryRetentionDays: Int {
         didSet {
             pruneInputHistory()
-            save()
+            saveInt(inputHistoryRetentionDays, forKey: Keys.inputHistoryRetentionDays)
         }
     }
 
     @Published var inputHistory: [InputHistoryEntry] {
         didSet {
+            guard !isReplacingInputHistory else {
+                return
+            }
             refreshInputHistoryCache()
-            save()
+            saveInputHistoryIfNeeded()
         }
     }
 
@@ -128,6 +131,7 @@ final class UserSettings: ObservableObject {
     }()
     private let defaults = UserDefaults.standard
     private var lastSavedInputHistory: [InputHistoryEntry] = []
+    private var isReplacingInputHistory = false
 
     init() {
         asrEndpointText = defaults.string(forKey: Keys.asrEndpointText)
@@ -345,19 +349,47 @@ final class UserSettings: ObservableObject {
             return
         }
 
-        inputHistory.append(InputHistoryEntry(timestamp: timestamp, text: trimmed))
-        if inputHistory.count > Self.maxInputHistoryCount {
-            inputHistory.removeFirst(inputHistory.count - Self.maxInputHistoryCount)
+        let entry = InputHistoryEntry(timestamp: timestamp, text: trimmed)
+        var updatedHistory = inputHistory
+        updatedHistory.append(entry)
+
+        var needsFullCacheRefresh = false
+        if updatedHistory.count > Self.maxInputHistoryCount {
+            updatedHistory.removeFirst(updatedHistory.count - Self.maxInputHistoryCount)
+            needsFullCacheRefresh = true
         }
-        pruneInputHistory(now: timestamp)
+
+        if inputHistoryRetentionDays > 0,
+           let cutoff = Calendar.current.date(byAdding: .day, value: -inputHistoryRetentionDays, to: timestamp) {
+            let countBeforePruning = updatedHistory.count
+            updatedHistory.removeAll { $0.timestamp < cutoff }
+            needsFullCacheRefresh = needsFullCacheRefresh || updatedHistory.count != countBeforePruning
+        }
+
+        replaceInputHistory(updatedHistory) { [entry] in
+            if needsFullCacheRefresh {
+                refreshInputHistoryCache()
+            } else {
+                appendInputHistoryCache(entry)
+            }
+        }
     }
 
     func deleteInputHistoryEntry(id: InputHistoryEntry.ID) {
-        inputHistory.removeAll { $0.id == id }
+        let updatedHistory = inputHistory.filter { $0.id != id }
+        guard updatedHistory.count != inputHistory.count else {
+            return
+        }
+
+        replaceInputHistory(updatedHistory, cacheUpdate: refreshInputHistoryCache)
     }
 
     func clearInputHistory() {
-        inputHistory.removeAll()
+        guard !inputHistory.isEmpty else {
+            return
+        }
+
+        replaceInputHistory([], cacheUpdate: refreshInputHistoryCache)
     }
 
     func exportInputHistoryText() -> String {
@@ -377,18 +409,38 @@ final class UserSettings: ObservableObject {
             return
         }
 
-        inputHistory.removeAll { $0.timestamp < cutoff }
+        let prunedHistory = inputHistory.filter { $0.timestamp >= cutoff }
+        guard prunedHistory.count != inputHistory.count else {
+            return
+        }
+
+        replaceInputHistory(prunedHistory, cacheUpdate: refreshInputHistoryCache)
     }
 
     private func refreshInputHistoryCache() {
         inputStatistics = InputStatistics(entries: inputHistory)
-        inputHistoryRows = inputHistory.reversed().map { entry in
-            InputHistoryDisplayRow(
-                id: entry.id,
-                timestampText: Self.inputHistoryDateFormatter.string(from: entry.timestamp),
-                text: entry.text
-            )
-        }
+        inputHistoryRows = inputHistory.reversed().map { Self.inputHistoryDisplayRow(for: $0) }
+    }
+
+    private func appendInputHistoryCache(_ entry: InputHistoryEntry) {
+        inputStatistics = inputStatistics.adding(entry)
+        inputHistoryRows.insert(Self.inputHistoryDisplayRow(for: entry), at: 0)
+    }
+
+    private func replaceInputHistory(_ history: [InputHistoryEntry], cacheUpdate: () -> Void) {
+        isReplacingInputHistory = true
+        inputHistory = history
+        isReplacingInputHistory = false
+        cacheUpdate()
+        saveInputHistoryIfNeeded()
+    }
+
+    private static func inputHistoryDisplayRow(for entry: InputHistoryEntry) -> InputHistoryDisplayRow {
+        InputHistoryDisplayRow(
+            id: entry.id,
+            timestampText: inputHistoryDateFormatter.string(from: entry.timestamp),
+            text: entry.text
+        )
     }
 
     private func resolvedAPIKey() throws -> String {
@@ -462,36 +514,6 @@ final class UserSettings: ObservableObject {
         }
 
         return "\(prompt)\n\n优先保留这些专有名词：\n\(terms)"
-    }
-
-    private func save() {
-        saveString(asrEndpointText, forKey: Keys.asrEndpointText)
-        saveString(apiKey, forKey: Keys.apiKey)
-        saveString(asrModel, forKey: Keys.asrModel)
-        saveStringArray(asrModelOptions, forKey: Keys.asrModelOptions)
-        saveBool(rewriteEnabled, forKey: Keys.rewriteEnabled)
-        saveString(rewriteEndpointText, forKey: Keys.rewriteEndpointText)
-        saveString(rewriteModel, forKey: Keys.rewriteModel)
-        saveStringArray(rewriteModelOptions, forKey: Keys.rewriteModelOptions)
-        saveString(requestMode.rawValue, forKey: Keys.requestMode)
-        saveString(authHeaderName, forKey: Keys.authHeaderName)
-        saveString(authHeaderPrefix, forKey: Keys.authHeaderPrefix)
-        saveString(languageCode, forKey: Keys.languageCode)
-        saveString(stylePrompt, forKey: Keys.stylePrompt)
-        saveString(vocabulary, forKey: Keys.vocabulary)
-        saveString(asrResponseKeyPath, forKey: Keys.asrResponseKeyPath)
-        saveString(rewriteResponseKeyPath, forKey: Keys.rewriteResponseKeyPath)
-        saveInt(rewriteSkipMaxCharacters, forKey: Keys.rewriteSkipMaxCharacters)
-        saveBool(fastOutputEnabled, forKey: Keys.fastOutputEnabled)
-        saveBool(autoGenerateVocabulary, forKey: Keys.autoGenerateVocabulary)
-        saveBool(autoPaste, forKey: Keys.autoPaste)
-        saveBool(preserveClipboard, forKey: Keys.preserveClipboard)
-        saveBool(showDockIcon, forKey: Keys.showDockIcon)
-        recordingShortcut.save(to: defaults)
-        saveBool(holdToRecordEnabled, forKey: Keys.holdToRecordEnabled)
-        saveBool(inputHistoryEnabled, forKey: Keys.inputHistoryEnabled)
-        saveInt(inputHistoryRetentionDays, forKey: Keys.inputHistoryRetentionDays)
-        saveInputHistoryIfNeeded()
     }
 
     private func saveString(_ value: String, forKey key: String) {
@@ -693,7 +715,7 @@ struct InputStatistics: Equatable {
     init(entries: [InputHistoryEntry]) {
         usageCount = entries.count
         characterCount = entries.reduce(0) { total, entry in
-            total + entry.text.filter { !$0.isWhitespace }.count
+            total + Self.countCharacters(in: entry.text)
         }
         wordCount = entries.reduce(0) { total, entry in
             total + Self.countWords(in: entry.text)
@@ -701,6 +723,26 @@ struct InputStatistics: Equatable {
         sentenceCount = entries.reduce(0) { total, entry in
             total + Self.countSentences(in: entry.text)
         }
+    }
+
+    private init(characterCount: Int, usageCount: Int, wordCount: Int, sentenceCount: Int) {
+        self.characterCount = characterCount
+        self.usageCount = usageCount
+        self.wordCount = wordCount
+        self.sentenceCount = sentenceCount
+    }
+
+    func adding(_ entry: InputHistoryEntry) -> InputStatistics {
+        InputStatistics(
+            characterCount: characterCount + Self.countCharacters(in: entry.text),
+            usageCount: usageCount + 1,
+            wordCount: wordCount + Self.countWords(in: entry.text),
+            sentenceCount: sentenceCount + Self.countSentences(in: entry.text)
+        )
+    }
+
+    private static func countCharacters(in text: String) -> Int {
+        text.filter { !$0.isWhitespace }.count
     }
 
     private static func countWords(in text: String) -> Int {

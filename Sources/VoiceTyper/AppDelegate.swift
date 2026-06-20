@@ -713,6 +713,7 @@ private final class RealtimeAudioRouter: @unchecked Sendable {
     private let queue = DispatchQueue(label: "VoiceTyper.AppDelegate.realtimeAudioRouter")
     private var session: RealtimeTranscriptionSession?
     private var pendingChunks: [Data] = []
+    private var pendingStartIndex = 0
     private var pendingByteCount = 0
     private var isCancelled = false
     private let maxPendingByteCount = 640_000
@@ -734,14 +735,16 @@ private final class RealtimeAudioRouter: @unchecked Sendable {
 
             self.pendingChunks.append(pcmData)
             self.pendingByteCount += pcmData.count
-            var dropCount = 0
             while self.pendingByteCount > self.maxPendingByteCount,
-                  dropCount < self.pendingChunks.count {
-                self.pendingByteCount -= self.pendingChunks[dropCount].count
-                dropCount += 1
+                  self.pendingStartIndex < self.pendingChunks.count {
+                self.pendingByteCount -= self.pendingChunks[self.pendingStartIndex].count
+                self.pendingStartIndex += 1
             }
-            if dropCount > 0 {
-                self.pendingChunks.removeFirst(dropCount)
+
+            if self.pendingStartIndex > 32,
+               self.pendingStartIndex * 2 >= self.pendingChunks.count {
+                self.pendingChunks.removeFirst(self.pendingStartIndex)
+                self.pendingStartIndex = 0
             }
         }
     }
@@ -753,12 +756,12 @@ private final class RealtimeAudioRouter: @unchecked Sendable {
             }
 
             self.session = session
-            let chunks = pendingChunks
-            pendingChunks.removeAll()
-            pendingByteCount = 0
-            for chunk in chunks {
-                session.sendAudio(chunk)
+            for index in pendingStartIndex..<pendingChunks.count {
+                session.sendAudio(pendingChunks[index])
             }
+            pendingChunks.removeAll(keepingCapacity: true)
+            pendingStartIndex = 0
+            pendingByteCount = 0
         }
     }
 
@@ -767,6 +770,7 @@ private final class RealtimeAudioRouter: @unchecked Sendable {
             self?.isCancelled = true
             self?.session = nil
             self?.pendingChunks.removeAll()
+            self?.pendingStartIndex = 0
             self?.pendingByteCount = 0
         }
     }

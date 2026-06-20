@@ -5,7 +5,7 @@ final class TranscriptionClient {
     private static let fastRewriteTimeoutNanoseconds: UInt64 = 800_000_000
     fileprivate static let realtimePreviewFallbackDelayNanoseconds: UInt64 = 900_000_000
     fileprivate static let realtimePreviewFallbackMinimumCharacters = 48
-    fileprivate static let realtimeSendTimeout: DispatchTimeInterval = .seconds(10)
+    fileprivate static let realtimeSendTimeoutNanoseconds: UInt64 = 10_000_000_000
     typealias RealtimePreviewHandler = @MainActor (String) -> Void
 
     func transcribe(audioURL: URL, settings: SettingsSnapshot) async throws -> TranscriptionResult {
@@ -40,7 +40,7 @@ final class TranscriptionClient {
         request.timeoutInterval = Self.requestTimeout
         request.setValue("\(settings.authHeaderPrefix)\(settings.apiKey)", forHTTPHeaderField: settings.authHeaderName.isEmpty ? "Authorization" : settings.authHeaderName)
 
-        let webSocketTask = URLSession.shared.webSocketTask(with: request)
+        let webSocketTask = AppNetworkSession.shared.webSocketTask(with: request)
         webSocketTask.resume()
         let previewStore = RealtimeTranscriptStore()
         let streamingRewriteSession = settings.rewriteEnabled
@@ -449,7 +449,7 @@ final class TranscriptionClient {
         request.timeoutInterval = Self.requestTimeout
         request.setValue("\(settings.authHeaderPrefix)\(settings.apiKey)", forHTTPHeaderField: settings.authHeaderName.isEmpty ? "Authorization" : settings.authHeaderName)
 
-        let webSocketTask = URLSession.shared.webSocketTask(with: request)
+        let webSocketTask = AppNetworkSession.shared.webSocketTask(with: request)
         webSocketTask.resume()
         defer {
             webSocketTask.cancel(with: .normalClosure, reason: nil)
@@ -484,7 +484,7 @@ final class TranscriptionClient {
         request.setValue("\(settings.authHeaderPrefix)\(settings.apiKey)", forHTTPHeaderField: settings.authHeaderName.isEmpty ? "Authorization" : settings.authHeaderName)
 
         let taskID = Self.taskID()
-        let webSocketTask = URLSession.shared.webSocketTask(with: request)
+        let webSocketTask = AppNetworkSession.shared.webSocketTask(with: request)
         webSocketTask.resume()
         defer {
             webSocketTask.cancel(with: .normalClosure, reason: nil)
@@ -953,7 +953,7 @@ final class TranscriptionClient {
         var request = request
         request.httpBody = body
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AppNetworkSession.shared.data(for: request)
         if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
             let message = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             throw TranscriptionError.requestFailed(statusCode: httpResponse.statusCode, message: message)
@@ -979,10 +979,17 @@ private actor RealtimeTranscriptStore {
 }
 
 private final class RealtimeStreamingRewriteSession: @unchecked Sendable {
+    private enum Throttle {
+        static let minimumCharacterDelta = 18
+        static let minimumSourceLength = 28
+        static let sentenceEndCharacters = CharacterSet(charactersIn: "。！？!?；;\n")
+    }
+
     private let client: TranscriptionClient
     private let settings: SettingsSnapshot
     private let queue = DispatchQueue(label: "VoiceTyper.TranscriptionClient.streamingRewrite")
     private var latestSource = ""
+    private var lastSubmittedSource = ""
     private var latestRewrittenSource = ""
     private var latestRewrittenText = ""
     private var pendingSource = ""
@@ -996,16 +1003,20 @@ private final class RealtimeStreamingRewriteSession: @unchecked Sendable {
 
     func submit(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > max(12, settings.rewriteSkipMaxCharacters) else {
+        guard trimmed.count > max(Throttle.minimumSourceLength, settings.rewriteSkipMaxCharacters) else {
             return
         }
 
         queue.async { [weak self] in
-            guard let self, !self.isCancelled, self.latestSource != trimmed else {
+            guard let self,
+                  !self.isCancelled,
+                  self.latestSource != trimmed,
+                  self.shouldSubmitLocked(trimmed) else {
                 return
             }
 
             self.latestSource = trimmed
+            self.lastSubmittedSource = trimmed
             self.pendingSource = trimmed
             if !self.isRewriting {
                 self.startNextRewriteLocked()
@@ -1029,6 +1040,29 @@ private final class RealtimeStreamingRewriteSession: @unchecked Sendable {
         queue.async { [weak self] in
             self?.isCancelled = true
         }
+    }
+
+    private func shouldSubmitLocked(_ source: String) -> Bool {
+        guard !lastSubmittedSource.isEmpty else {
+            return true
+        }
+        guard source != lastSubmittedSource else {
+            return false
+        }
+
+        let characterDelta = abs(source.count - lastSubmittedSource.count)
+        if characterDelta >= Throttle.minimumCharacterDelta {
+            return true
+        }
+
+        guard source.count > lastSubmittedSource.count else {
+            return false
+        }
+
+        let newText = source.hasPrefix(lastSubmittedSource)
+            ? String(source.dropFirst(lastSubmittedSource.count))
+            : source
+        return newText.rangeOfCharacter(from: Throttle.sentenceEndCharacters) != nil
     }
 
     private func startNextRewriteLocked() {
@@ -1087,6 +1121,8 @@ final class RealtimeTranscriptionSession {
     private let sender: RealtimeWebSocketSender
     private let previewStore: RealtimeTranscriptStore
     private let streamingRewriteSession: RealtimeStreamingRewriteSession?
+    private let senderTaskQueue = DispatchQueue(label: "VoiceTyper.TranscriptionClient.realtimeSenderTasks")
+    private var senderTask: Task<Void, Never>?
 
     fileprivate init(
         webSocketTask: URLSessionWebSocketTask,
@@ -1100,18 +1136,38 @@ final class RealtimeTranscriptionSession {
         self.receiveTask = receiveTask
         self.previewStore = previewStore
         self.streamingRewriteSession = streamingRewriteSession
-        sender = RealtimeWebSocketSender(webSocketTask: webSocketTask, realtimeProtocol: realtimeProtocol)
-        if let initialEvent {
-            sender.enqueueEvent(initialEvent)
-        }
+        sender = RealtimeWebSocketSender(
+            webSocketTask: webSocketTask,
+            realtimeProtocol: realtimeProtocol,
+            initialEvent: initialEvent
+        )
     }
 
     func sendAudio(_ pcmData: Data) {
-        sender.enqueueAudio(pcmData)
+        guard !pcmData.isEmpty else {
+            return
+        }
+
+        senderTaskQueue.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let previousTask = self.senderTask
+            let sender = self.sender
+            self.senderTask = Task {
+                await previousTask?.value
+                guard !Task.isCancelled else {
+                    return
+                }
+                await sender.enqueueAudio(pcmData)
+            }
+        }
     }
 
     fileprivate func finish() async throws -> String {
         do {
+            await waitForQueuedSenderTasks()
             try await sender.finish()
             return try await receiveTask.value
         } catch {
@@ -1122,6 +1178,7 @@ final class RealtimeTranscriptionSession {
 
     fileprivate func finishImmediately() async throws -> RealtimeFinishOutcome {
         do {
+            await waitForQueuedSenderTasks()
             try await sender.finish()
             return try await finishWithPreviewFallback()
         } catch {
@@ -1182,97 +1239,101 @@ final class RealtimeTranscriptionSession {
 
     func cancel() {
         streamingRewriteSession?.cancel()
-        sender.cancel()
+        senderTaskQueue.async { [weak self] in
+            self?.senderTask?.cancel()
+        }
+        Task { [sender] in
+            await sender.cancel()
+        }
         receiveTask.cancel()
         webSocketTask.cancel(with: .normalClosure, reason: nil)
     }
+
+    private func waitForQueuedSenderTasks() async {
+        let task = senderTaskQueue.sync { senderTask }
+        await task?.value
+    }
 }
 
-private final class RealtimeWebSocketSender: @unchecked Sendable {
+private actor RealtimeWebSocketSender {
     private let webSocketTask: URLSessionWebSocketTask
     private let realtimeProtocol: DashScopeRealtimeProtocol
-    private let queue = DispatchQueue(label: "VoiceTyper.TranscriptionClient.realtimeSender")
+    private let initialEvent: [String: Any]?
     private var firstError: Error?
     private var isFinishing = false
+    private var didQueueInitialEvent = false
     private var pendingAudio = Data()
     private var audioByteCount = 0
+    private var sendTail: Task<Void, Error>?
     private let minimumAudioByteCount = 3_200
     private let targetAudioByteCount = 3_200
 
-    init(webSocketTask: URLSessionWebSocketTask, realtimeProtocol: DashScopeRealtimeProtocol) {
+    init(
+        webSocketTask: URLSessionWebSocketTask,
+        realtimeProtocol: DashScopeRealtimeProtocol,
+        initialEvent: [String: Any]?
+    ) {
         self.webSocketTask = webSocketTask
         self.realtimeProtocol = realtimeProtocol
+        self.initialEvent = initialEvent
         pendingAudio.reserveCapacity(targetAudioByteCount * 2)
     }
 
-    func enqueueAudio(_ pcmData: Data) {
+    func enqueueAudio(_ pcmData: Data) async {
         guard !pcmData.isEmpty else {
             return
         }
 
-        queue.async { [weak self] in
-            guard let self, !self.isFinishing, self.firstError == nil else {
-                return
-            }
-
-            self.pendingAudio.append(pcmData)
-            self.flushPendingAudioIfNeeded(force: false)
+        guard !isFinishing, firstError == nil else {
+            return
         }
-    }
 
-    func enqueueEvent(_ event: [String: Any]) {
-        queue.async { [weak self] in
-            guard let self, !self.isFinishing, self.firstError == nil else {
-                return
-            }
-
-            self.sendSync(event)
+        pendingAudio.append(pcmData)
+        do {
+            try await flushPendingAudioIfNeeded(force: false)
+        } catch {
+            record(error)
         }
     }
 
     func finish() async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async { [weak self] in
-                guard let self else {
-                    continuation.resume()
-                    return
-                }
+        isFinishing = true
 
-                self.isFinishing = true
-                self.flushPendingAudioIfNeeded(force: true)
-                if let firstError = self.firstError {
-                    continuation.resume(throwing: firstError)
-                    return
-                }
-                guard self.audioByteCount >= self.minimumAudioByteCount else {
-                    continuation.resume(throwing: TranscriptionError.noAudioCaptured)
-                    return
-                }
+        do {
+            try await flushPendingAudioIfNeeded(force: true)
+        } catch {
+            record(error)
+        }
+        if let firstError {
+            throw firstError
+        }
+        guard audioByteCount >= minimumAudioByteCount else {
+            throw TranscriptionError.noAudioCaptured
+        }
 
-                switch self.realtimeProtocol {
-                case .qwenSession:
-                    self.sendSync(["event_id": TranscriptionClient.eventID(), "type": "input_audio_buffer.commit"])
-                    self.sendSync(["event_id": TranscriptionClient.eventID(), "type": "session.finish"])
-                case .inferenceTask(let taskID):
-                    self.sendSync(TranscriptionClient.dashScopeInferenceFinishTask(taskID: taskID))
-                }
-
-                if let firstError = self.firstError {
-                    continuation.resume(throwing: firstError)
-                } else {
-                    continuation.resume()
-                }
+        do {
+            switch realtimeProtocol {
+            case .qwenSession:
+                try await send(["event_id": TranscriptionClient.eventID(), "type": "input_audio_buffer.commit"])
+                try await send(["event_id": TranscriptionClient.eventID(), "type": "session.finish"])
+            case .inferenceTask(let taskID):
+                try await send(TranscriptionClient.dashScopeInferenceFinishTask(taskID: taskID))
             }
+        } catch {
+            record(error)
+        }
+
+        if let firstError {
+            throw firstError
         }
     }
 
     func cancel() {
-        queue.async { [weak self] in
-            self?.isFinishing = true
-        }
+        isFinishing = true
+        pendingAudio.removeAll(keepingCapacity: true)
     }
 
-    private func flushPendingAudioIfNeeded(force: Bool) {
+    private func flushPendingAudioIfNeeded(force: Bool) async throws {
         guard firstError == nil,
               !pendingAudio.isEmpty,
               force || pendingAudio.count >= targetAudioByteCount else {
@@ -1281,65 +1342,102 @@ private final class RealtimeWebSocketSender: @unchecked Sendable {
 
         let audio = pendingAudio
         pendingAudio.removeAll(keepingCapacity: true)
+        try await ensureInitialEventQueued()
         switch realtimeProtocol {
         case .qwenSession:
-            sendSync([
+            try await send([
                 "event_id": TranscriptionClient.eventID(),
                 "type": "input_audio_buffer.append",
                 "audio": audio.base64EncodedString()
             ])
         case .inferenceTask:
-            sendDataSync(audio)
+            try await sendData(audio)
         }
 
-        if firstError == nil {
-            audioByteCount += audio.count
-        }
+        audioByteCount += audio.count
     }
 
-    private func sendSync(_ event: [String: Any]) {
-        guard firstError == nil else {
+    private func ensureInitialEventQueued() async throws {
+        guard let initialEvent, !didQueueInitialEvent else {
             return
         }
 
-        do {
-            let data = try JSONSerialization.data(withJSONObject: event)
-            guard let string = String(data: data, encoding: .utf8) else {
-                firstError = TranscriptionError.invalidRealtimePayload
-                return
+        didQueueInitialEvent = true
+        try await send(initialEvent)
+    }
+
+    private func send(_ event: [String: Any]) async throws {
+        guard firstError == nil else {
+            throw firstError ?? TranscriptionError.realtimeSendTimedOut
+        }
+
+        let data = try JSONSerialization.data(withJSONObject: event)
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw TranscriptionError.invalidRealtimePayload
+        }
+
+        try await enqueueMessage(.string(string))
+    }
+
+    private func sendData(_ data: Data) async throws {
+        guard firstError == nil else {
+            throw firstError ?? TranscriptionError.realtimeSendTimedOut
+        }
+
+        try await enqueueMessage(.data(data))
+    }
+
+    private func enqueueMessage(_ message: URLSessionWebSocketTask.Message) async throws {
+        let previousTail = sendTail
+        let task = webSocketTask
+        let nextTail = Task {
+            if let previousTail {
+                try await previousTail.value
             }
 
-            let semaphore = DispatchSemaphore(value: 0)
-            webSocketTask.send(.string(string)) { [weak self] error in
-                if let error {
-                    self?.firstError = error
-                }
-                semaphore.signal()
-            }
-            if semaphore.wait(timeout: .now() + TranscriptionClient.realtimeSendTimeout) == .timedOut {
-                firstError = TranscriptionError.realtimeSendTimedOut
-                webSocketTask.cancel(with: .goingAway, reason: nil)
-            }
+            try await Self.send(message, using: task)
+        }
+        sendTail = nextTail
+
+        do {
+            try await nextTail.value
         } catch {
+            record(error)
+            throw error
+        }
+    }
+
+    private func record(_ error: Error) {
+        if firstError == nil {
             firstError = error
         }
     }
 
-    private func sendDataSync(_ data: Data) {
-        guard firstError == nil else {
-            return
-        }
+    private static func send(
+        _ message: URLSessionWebSocketTask.Message,
+        using task: URLSessionWebSocketTask
+    ) async throws {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await task.send(message)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: TranscriptionClient.realtimeSendTimeoutNanoseconds)
+                    throw TranscriptionError.realtimeSendTimedOut
+                }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        webSocketTask.send(.data(data)) { [weak self] error in
-            if let error {
-                self?.firstError = error
+                do {
+                    _ = try await group.next()
+                    group.cancelAll()
+                } catch {
+                    group.cancelAll()
+                    throw error
+                }
             }
-            semaphore.signal()
-        }
-        if semaphore.wait(timeout: .now() + TranscriptionClient.realtimeSendTimeout) == .timedOut {
-            firstError = TranscriptionError.realtimeSendTimedOut
-            webSocketTask.cancel(with: .goingAway, reason: nil)
+        } catch TranscriptionError.realtimeSendTimedOut {
+            task.cancel(with: .goingAway, reason: nil)
+            throw TranscriptionError.realtimeSendTimedOut
         }
     }
 }

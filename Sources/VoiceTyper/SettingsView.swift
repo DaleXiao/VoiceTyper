@@ -117,6 +117,8 @@ struct SettingsView: View {
             dictionarySettingsTab
         case .api:
             apiSettingsTab
+        case .about:
+            aboutSettingsTab
         }
     }
 
@@ -433,6 +435,30 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, 8)
+    }
+
+    private var aboutSettingsTab: some View {
+        Form {
+            Section("关于") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("说入法")
+                        .font(.headline)
+                    Text("macOS 语音输入工具")
+                        .foregroundStyle(.secondary)
+                }
+
+                LabeledContent("版本", value: appVersionText)
+                LabeledContent("开源协议", value: "Apache License 2.0")
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top, 8)
+    }
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "3"
+        return "\(version) (\(build))"
     }
 
     private var apiConfigurationSummary: String {
@@ -878,6 +904,7 @@ private enum SettingsPane: CaseIterable, Identifiable {
     case statistics
     case dictionary
     case api
+    case about
 
     var id: Self { self }
 
@@ -891,6 +918,8 @@ private enum SettingsPane: CaseIterable, Identifiable {
             return "字典设置"
         case .api:
             return "API 设置"
+        case .about:
+            return "关于"
         }
     }
 
@@ -904,6 +933,8 @@ private enum SettingsPane: CaseIterable, Identifiable {
             return "text.book.closed"
         case .api:
             return "network"
+        case .about:
+            return "info.circle"
         }
     }
 }
