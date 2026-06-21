@@ -143,7 +143,7 @@ private struct RecordingOverlayView: View {
         content(time: model.animationTime)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(.horizontal, 18)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
             .background(CapsuleMaterialBackground())
             .clipShape(Capsule())
             .overlay(
@@ -162,22 +162,25 @@ private struct RecordingOverlayView: View {
                     .frame(width: 22, height: 22)
 
                 WaveformBars(level: model.level, time: time)
-                    .frame(width: 76, height: 26)
+                    .frame(width: 88, height: 30)
             }
+            .offset(x: -8)
         case .message:
             Text(model.message)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.white.opacity(0.94))
+                .foregroundStyle(.black.opacity(0.88))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
     }
 
     private var recordingDot: some View {
-        Circle()
-            .fill(Color.red)
+        let recordingGreen = Color(red: 0.20, green: 0.86, blue: 0.42)
+
+        return Circle()
+            .fill(recordingGreen)
             .frame(width: 9, height: 9)
-            .shadow(color: .red.opacity(0.55), radius: 7)
+            .shadow(color: recordingGreen.opacity(0.55), radius: 7)
     }
 
 }
@@ -242,7 +245,7 @@ private struct WaveformBars: View {
             ForEach(0..<9, id: \.self) { index in
                 RoundedRectangle(cornerRadius: 2.5)
                     .fill(Color.white.opacity(0.92))
-                    .frame(width: 4.5, height: height(for: index))
+                    .frame(width: 5, height: height(for: index))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -251,8 +254,8 @@ private struct WaveformBars: View {
     private func height(for index: Int) -> CGFloat {
         let phase = sin(time * 8.0 + Double(index) * 0.72)
         let ripple = CGFloat((phase + 1) / 2)
-        let envelope = 0.35 + level * 0.65
+        let envelope = 0.42 + level * 0.58
         let shape = CGFloat([0.35, 0.52, 0.78, 0.48, 1.0, 0.48, 0.78, 0.52, 0.35][index])
-        return 6 + 20 * envelope * (0.38 + ripple * 0.62) * shape
+        return 7 + 22 * envelope * (0.42 + ripple * 0.58) * shape
     }
 }
