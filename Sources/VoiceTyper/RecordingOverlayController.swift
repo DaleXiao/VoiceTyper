@@ -175,12 +175,24 @@ private struct RecordingOverlayView: View {
     }
 
     private var recordingDot: some View {
-        let recordingGreen = Color(red: 0.20, green: 0.86, blue: 0.42)
+        let recordingGreen = Color(red: 0.18, green: 0.95, blue: 0.43)
 
         return Circle()
-            .fill(recordingGreen)
-            .frame(width: 9, height: 9)
-            .shadow(color: recordingGreen.opacity(0.55), radius: 7)
+            .fill(
+                RadialGradient(
+                    colors: [
+                        Color.white.opacity(0.85),
+                        recordingGreen,
+                        recordingGreen.opacity(0.92)
+                    ],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: 4
+                )
+            )
+            .frame(width: 8, height: 8)
+            .shadow(color: recordingGreen.opacity(0.88), radius: 6)
+            .shadow(color: recordingGreen.opacity(0.42), radius: 13)
     }
 
 }
@@ -241,21 +253,40 @@ private struct WaveformBars: View {
     let time: TimeInterval
 
     var body: some View {
-        HStack(alignment: .center, spacing: 4) {
-            ForEach(0..<9, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 2.5)
-                    .fill(Color.white.opacity(0.92))
-                    .frame(width: 5, height: height(for: index))
+        HStack(alignment: .center, spacing: Self.dotSpacing) {
+            ForEach(0..<Self.columnCount, id: \.self) { column in
+                VStack(spacing: Self.dotSpacing) {
+                    ForEach(0..<Self.rowCount, id: \.self) { row in
+                        Circle()
+                            .fill(Color.primary.opacity(dotOpacity(column: column, row: row)))
+                            .frame(width: Self.dotSize, height: Self.dotSize)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
-    private func height(for index: Int) -> CGFloat {
-        let phase = sin(time * 8.0 + Double(index) * 0.72)
-        let ripple = CGFloat((phase + 1) / 2)
-        let envelope = 0.42 + level * 0.58
-        let shape = CGFloat([0.35, 0.52, 0.78, 0.48, 1.0, 0.48, 0.78, 0.52, 0.35][index])
-        return 7 + 22 * envelope * (0.42 + ripple * 0.58) * shape
+    private func dotOpacity(column: Int, row: Int) -> Double {
+        let clampedLevel = min(max(level, 0), 1)
+        let pulse = CGFloat((sin(time * 5.8) + 1) / 2)
+        let activity = 0.38 + clampedLevel * 0.62
+        let litColumns = CGFloat(Self.columnCount - 1) * (0.32 + activity * (0.36 + pulse * 0.24))
+        let columnPosition = CGFloat(column)
+        let headDistance = abs(columnPosition - litColumns)
+        let rowDistance = abs(CGFloat(row) - 1)
+        let body = columnPosition <= litColumns ? CGFloat(0.56) : CGFloat(0.10)
+        let head = max(0, 1 - headDistance / 2.1) * 0.36
+        let tail = max(0, 1 - max(columnPosition - litColumns, 0) / 2.8) * 0.18
+        let rowWeight = rowDistance == 0 ? CGFloat(1.0) : CGFloat(0.52)
+        let shimmer = CGFloat((sin(time * 7.0 + Double(column) * 0.42) + 1) / 2)
+        let opacity = (body + head + tail) * rowWeight * (0.84 + shimmer * 0.16)
+
+        return Double(min(max(opacity, 0.08), 0.96))
     }
+
+    private static let columnCount = 14
+    private static let rowCount = 3
+    private static let dotSize: CGFloat = 3.2
+    private static let dotSpacing: CGFloat = 3
 }
